@@ -145,7 +145,7 @@ func TestManualRefreshWorksWhileModalOpen(t *testing.T) {
 	}
 }
 
-func TestTickTriggersRefreshWithoutClosingModal(t *testing.T) {
+func TestTickDoesNotAutoRefreshWhileModalOpen(t *testing.T) {
 	t.Parallel()
 
 	m := NewModel(WithRefreshCmd(func() tea.Cmd {
@@ -158,6 +158,23 @@ func TestTickTriggersRefreshWithoutClosingModal(t *testing.T) {
 	if model.modal != modalNamespace {
 		t.Fatalf("expected modal to stay open, got %v", model.modal)
 	}
+	if cmd == nil {
+		t.Fatal("expected tick command")
+	}
+	msg := cmd()
+	if _, ok := msg.(refreshTickMsg); !ok {
+		t.Fatalf("expected refreshTickMsg while modal open, got %T", msg)
+	}
+}
+
+func TestTickTriggersRefreshWhenNoModalOpen(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(WithRefreshCmd(func() tea.Cmd {
+		return func() tea.Msg { return "tick-refresh" }
+	}))
+
+	_, cmd := m.Update(refreshTickMsg{})
 	if cmd == nil {
 		t.Fatal("expected batch command")
 	}

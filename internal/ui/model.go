@@ -181,7 +181,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case refreshTickMsg:
-		return m, tea.Batch(refreshTickCmd(), m.refreshIfEnabled())
+		if m.modal != modalNone {
+			return m, refreshTickCmd()
+		}
+		if refresh := m.refreshIfEnabled(); refresh != nil {
+			return m, tea.Batch(refreshTickCmd(), refresh)
+		}
+		return m, refreshTickCmd()
 
 	case tea.KeyMsg:
 		return m.updateKey(msg)
@@ -376,8 +382,16 @@ func (m Model) renderModal(base string) string {
 }
 
 func (m Model) tableHeader() string {
-	return fmt.Sprintf("%-24s %-10s %-7s %-8s %-6s %-15s %-18s %s",
-		"NAME", "STATUS", "READY", "RESTARTS", "AGE", "IP", "NODE", "LABELS")
+	return strings.Join([]string{
+		fixedCell("NAME", 24),
+		fixedCell("STATUS", 10),
+		fixedCell("READY", 7),
+		fixedCell("RESTARTS", 8),
+		fixedCell("AGE", 6),
+		fixedCell("IP", 15),
+		fixedCell("NODE", 18),
+		"LABELS",
+	}, " ")
 }
 
 func (m Model) visibleRows(maxRows int) []string {
@@ -393,17 +407,17 @@ func (m Model) visibleRows(maxRows int) []string {
 
 	out := make([]string, 0, end-start)
 	for _, pod := range m.pods[start:end] {
-		status := m.statusStyle(pod.Status).Render(truncate(pod.Status, 10))
-		row := fmt.Sprintf("%-24s %-10s %-7s %-8s %-6s %-15s %-18s %s",
-			truncate(pod.Name, 24),
+		status := m.statusStyle(pod.Status).Width(10).Render(truncate(pod.Status, 10))
+		row := strings.Join([]string{
+			fixedCell(pod.Name, 24),
 			status,
-			truncate(pod.Ready, 7),
-			truncate(pod.Restarts, 8),
-			truncate(pod.Age, 6),
-			truncate(pod.IP, 15),
-			truncate(pod.Node, 18),
+			fixedCell(pod.Ready, 7),
+			fixedCell(pod.Restarts, 8),
+			fixedCell(pod.Age, 6),
+			fixedCell(pod.IP, 15),
+			fixedCell(pod.Node, 18),
 			truncate(pod.Labels, max(0, m.width-100)),
-		)
+		}, " ")
 		out = append(out, m.styles.TableCell.Render(row))
 	}
 	return out
@@ -474,7 +488,7 @@ func defaultStyles() Styles {
 	return Styles{
 		App:         lipgloss.NewStyle().Padding(0, 1),
 		Header:      lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Padding(0, 1),
-		Body:        lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1),
+		Body:        lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Padding(0, 1),
 		Footer:      lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Padding(0, 1),
 		TableHeader: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("229")),
 		TableCell:   lipgloss.NewStyle().Foreground(lipgloss.Color("252")),
@@ -507,6 +521,10 @@ func truncate(s string, width int) string {
 		return "…"
 	}
 	return string(r[:width-1]) + "…"
+}
+
+func fixedCell(s string, width int) string {
+	return lipgloss.NewStyle().Width(width).Render(truncate(s, width))
 }
 
 func min(a, b int) int {
