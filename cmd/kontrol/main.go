@@ -14,9 +14,17 @@ import (
 	"kontrol/internal/ui"
 )
 
+var (
+	newClientFromKubeconfig = k8s.NewClientFromKubeconfig
+	contextNamespace        = k8s.ContextNamespace
+)
+
+const namespaceFallbackHint = "could not fetch namespaces; using kubeconfig namespace"
+
 type runtimeState struct {
 	currentContext   string
 	currentNamespace string
+	namespacesByCtx  map[string]string
 	contexts         []string
 	namespaces       []string
 	client           *k8s.Client
@@ -47,7 +55,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := config.Save(config.Config{Context: rt.currentContext, Namespace: rt.currentNamespace}); err != nil {
+	if err := rt.persistConfig(); err != nil {
 		log.Printf("persist config on quit (context=%q namespace=%q): %+v", rt.currentContext, rt.currentNamespace, err)
 	}
 }
@@ -64,6 +72,10 @@ func bootstrapRuntime() *runtimeState {
 		log.Printf("load persisted config: %+v", err)
 		rt.pendingErr = errors.New("load saved preferences failed")
 	}
+	rt.namespacesByCtx = map[string]string{}
+	for contextName, namespace := range cfg.NamespacesByContext {
+		rt.namespacesByCtx[contextName] = namespace
+	}
 
 	contexts, err := k8s.ListContexts("")
 	if err != nil {
@@ -79,17 +91,19 @@ func bootstrapRuntime() *runtimeState {
 	rt.currentContext = resolveContext(cfg.Context, kubeCurrent, contexts)
 
 	rt.applyContext(rt.currentContext)
-	rt.currentNamespace = resolveNamespace(cfg.Namespace, rt.namespaces)
 	return rt
 }
 
 func (rt *runtimeState) applyContext(selected string) {
+	savedNamespace := rt.namespaceForContext(selected)
+
 	if len(rt.mockPods) > 0 {
 		if selected == "" {
 			return
 		}
 		rt.currentContext = selected
-		rt.currentNamespace = resolveNamespace(rt.currentNamespace, rt.namespaces)
+		rt.currentNamespace = resolveNamespace(savedNamespace, rt.namespaces)
+		rt.rememberNamespace()
 		_ = rt.persistConfig()
 		return
 	}
@@ -98,17 +112,18 @@ func (rt *runtimeState) applyContext(selected string) {
 		rt.client = nil
 		rt.namespaces = nil
 		rt.currentContext = ""
-		rt.currentNamespace = resolveNamespace(rt.currentNamespace, nil)
+		rt.currentNamespace = resolveNamespace(savedNamespace, nil)
 		return
 	}
 
-	client, err := k8s.NewClientFromKubeconfig("", selected)
+	client, err := newClientFromKubeconfig("", selected)
 	if err != nil {
 		log.Printf("create Kubernetes client for context %q: %+v", selected, err)
 		rt.client = nil
 		rt.namespaces = nil
 		rt.currentContext = selected
-		rt.currentNamespace = resolveNamespace(rt.currentNamespace, nil)
+		rt.currentNamespace = resolveNamespace(savedNamespace, nil)
+		rt.rememberNamespace()
 		rt.pendingErr = firstErr(rt.pendingErr, errors.New("connect selected context failed"))
 		_ = rt.persistConfig()
 		return
@@ -117,11 +132,18 @@ func (rt *runtimeState) applyContext(selected string) {
 	namespaces, err := client.ListNamespaces(context.Background())
 	if err != nil {
 		log.Printf("list namespaces for context %q: %+v", selected, err)
+		fallbackNamespace, fallbackErr := contextNamespace("", selected)
+		if fallbackErr != nil {
+			log.Printf("resolve kubeconfig namespace for context %q: %+v", selected, fallbackErr)
+			fallbackNamespace = "default"
+		}
+		log.Printf("using kubeconfig namespace fallback for context %q: %q", selected, fallbackNamespace)
 		rt.client = client
 		rt.namespaces = nil
 		rt.currentContext = selected
-		rt.currentNamespace = resolveNamespace(rt.currentNamespace, nil)
-		rt.pendingErr = firstErr(rt.pendingErr, errors.New("load namespaces for selected context failed"))
+		rt.currentNamespace = resolveNamespace(fallbackNamespace, nil)
+		rt.rememberNamespace()
+		rt.pendingErr = firstErr(rt.pendingErr, errors.New(namespaceFallbackHint))
 		_ = rt.persistConfig()
 		return
 	}
@@ -129,7 +151,8 @@ func (rt *runtimeState) applyContext(selected string) {
 	rt.client = client
 	rt.namespaces = namespaces
 	rt.currentContext = selected
-	rt.currentNamespace = resolveNamespace(rt.currentNamespace, namespaces)
+	rt.currentNamespace = resolveNamespace(savedNamespace, namespaces)
+	rt.rememberNamespace()
 	_ = rt.persistConfig()
 }
 
@@ -138,6 +161,7 @@ func (rt *runtimeState) applyNamespace(selected string) {
 		return
 	}
 	rt.currentNamespace = selected
+	rt.rememberNamespace()
 	_ = rt.persistConfig()
 }
 
@@ -169,14 +193,32 @@ func (rt *runtimeState) refreshPods() ([]k8s.PodRow, error) {
 
 func (rt *runtimeState) persistConfig() error {
 	err := config.Save(config.Config{
-		Context:   rt.currentContext,
-		Namespace: rt.currentNamespace,
+		Context:             rt.currentContext,
+		Namespace:           rt.currentNamespace,
+		NamespacesByContext: rt.namespacesByCtx,
 	})
 	if err != nil {
 		log.Printf("persist config (context=%q namespace=%q): %+v", rt.currentContext, rt.currentNamespace, err)
 		rt.pendingErr = firstErr(rt.pendingErr, errors.New("save preferences failed"))
 	}
 	return err
+}
+
+func (rt *runtimeState) namespaceForContext(contextName string) string {
+	if rt == nil || contextName == "" {
+		return ""
+	}
+	return rt.namespacesByCtx[contextName]
+}
+
+func (rt *runtimeState) rememberNamespace() {
+	if rt == nil || rt.currentContext == "" || rt.currentNamespace == "" {
+		return
+	}
+	if rt.namespacesByCtx == nil {
+		rt.namespacesByCtx = map[string]string{}
+	}
+	rt.namespacesByCtx[rt.currentContext] = rt.currentNamespace
 }
 
 func resolveContext(saved, kubeCurrent string, contexts []string) string {
@@ -307,8 +349,11 @@ func mockRuntime() *runtimeState {
 	return &runtimeState{
 		currentContext:   "mock-dev",
 		currentNamespace: "default",
-		contexts:         []string{"mock-dev", "mock-stage", "mock-prod"},
-		namespaces:       []string{"default", "kube-system", "payments", "monitoring"},
-		mockPods:         pods,
+		namespacesByCtx: map[string]string{
+			"mock-dev": "default",
+		},
+		contexts:   []string{"mock-dev", "mock-stage", "mock-prod"},
+		namespaces: []string{"default", "kube-system", "payments", "monitoring"},
+		mockPods:   pods,
 	}
 }

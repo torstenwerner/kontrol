@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -14,7 +15,7 @@ func TestLoadFromPathMissingFileReturnsDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadFromPath returned error: %v", err)
 	}
-	if cfg != Default() {
+	if !reflect.DeepEqual(cfg, Default()) {
 		t.Fatalf("expected default config, got %+v", cfg)
 	}
 }
@@ -26,6 +27,9 @@ func TestSaveToPathAndLoadFromPathRoundTrip(t *testing.T) {
 	want := Config{
 		Context:   "dev",
 		Namespace: "team-a",
+		NamespacesByContext: map[string]string{
+			"dev": "team-a",
+		},
 	}
 
 	if err := saveToPath(path, want); err != nil {
@@ -36,7 +40,7 @@ func TestSaveToPathAndLoadFromPathRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadFromPath returned error: %v", err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("loaded config mismatch: got %+v want %+v", got, want)
 	}
 
@@ -73,6 +77,9 @@ func TestSaveAndLoadUseDefaultPathInHome(t *testing.T) {
 	want := Config{
 		Context:   "prod",
 		Namespace: "team-b",
+		NamespacesByContext: map[string]string{
+			"prod": "team-b",
+		},
 	}
 	if err := Save(want); err != nil {
 		t.Fatalf("Save() returned error: %v", err)
@@ -82,7 +89,7 @@ func TestSaveAndLoadUseDefaultPathInHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() returned error: %v", err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Load() = %+v, want %+v", got, want)
 	}
 
@@ -98,7 +105,93 @@ func TestLoadReturnsDefaultWhenConfigAbsentAtDefaultPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() returned error: %v", err)
 	}
-	if got != Default() {
+	if !reflect.DeepEqual(got, Default()) {
 		t.Fatalf("Load() = %+v, want default %+v", got, Default())
+	}
+}
+
+func TestLoadFromPathBackfillsNamespacesByContext(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"context":"dev","namespace":"team-a"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("loadFromPath returned error: %v", err)
+	}
+
+	want := Config{
+		Context:   "dev",
+		Namespace: "team-a",
+		NamespacesByContext: map[string]string{
+			"dev": "team-a",
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Load() = %+v, want %+v", got, want)
+	}
+}
+
+func TestLoadFromPathUsesNamespaceFromContextMap(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"context":"dev","namespace":"old","namespaces_by_context":{"dev":"team-a"}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("loadFromPath returned error: %v", err)
+	}
+
+	if got.Namespace != "team-a" {
+		t.Fatalf("Namespace = %q, want %q", got.Namespace, "team-a")
+	}
+}
+
+func TestLoadFromPathBackfillsEmptyMappedNamespaceFromLegacyField(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"context":"dev","namespace":"team-a","namespaces_by_context":{"dev":""}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("loadFromPath returned error: %v", err)
+	}
+	if got.Namespace != "team-a" {
+		t.Fatalf("Namespace = %q, want %q", got.Namespace, "team-a")
+	}
+	if got.NamespacesByContext["dev"] != "team-a" {
+		t.Fatalf("NamespacesByContext[dev] = %q, want %q", got.NamespacesByContext["dev"], "team-a")
+	}
+}
+
+func TestLoadFromPathKeepsLegacyNamespaceWhenContextMissing(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"namespace":"team-a"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("loadFromPath returned error: %v", err)
+	}
+	if got.Context != "" {
+		t.Fatalf("Context = %q, want empty", got.Context)
+	}
+	if got.Namespace != "team-a" {
+		t.Fatalf("Namespace = %q, want %q", got.Namespace, "team-a")
+	}
+	if len(got.NamespacesByContext) != 0 {
+		t.Fatalf("NamespacesByContext = %+v, want empty", got.NamespacesByContext)
 	}
 }

@@ -93,6 +93,33 @@ func CurrentContext(kubeconfigPath string) (string, error) {
 	return rawConfig.CurrentContext, nil
 }
 
+// ContextNamespace returns the configured namespace for the provided kubeconfig context.
+// If the context namespace is empty, "default" is returned.
+func ContextNamespace(kubeconfigPath, contextName string) (string, error) {
+	rawConfig, err := loadRawConfig(kubeconfigPath)
+	if err != nil {
+		return "", fmt.Errorf("load kubeconfig context namespace: %w", err)
+	}
+
+	resolvedContext := contextName
+	if resolvedContext == "" {
+		resolvedContext = rawConfig.CurrentContext
+	}
+	if resolvedContext == "" {
+		return "", fmt.Errorf("resolve kubeconfig context namespace: context name is empty")
+	}
+
+	kubeContext, ok := rawConfig.Contexts[resolvedContext]
+	if !ok {
+		return "", fmt.Errorf("resolve kubeconfig context namespace: context %q not found", resolvedContext)
+	}
+	if kubeContext == nil || kubeContext.Namespace == "" {
+		return "default", nil
+	}
+
+	return kubeContext.Namespace, nil
+}
+
 func loadRawConfig(kubeconfigPath string) (clientcmdapi.Config, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if kubeconfigPath != "" {

@@ -15,13 +15,16 @@ const (
 
 // Config stores persisted selections.
 type Config struct {
-	Context   string `json:"context"`
-	Namespace string `json:"namespace"`
+	Context             string            `json:"context"`
+	Namespace           string            `json:"namespace"`
+	NamespacesByContext map[string]string `json:"namespaces_by_context,omitempty"`
 }
 
 // Default returns the default config values.
 func Default() Config {
-	return Config{}
+	return Config{
+		NamespacesByContext: map[string]string{},
+	}
 }
 
 // Load reads persisted config from ~/.kontrol/config.json.
@@ -64,10 +67,13 @@ func loadFromPath(path string) (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Default(), fmt.Errorf("decode config %q: %w", path, err)
 	}
+	normalize(&cfg)
 	return cfg, nil
 }
 
 func saveToPath(path string, cfg Config) error {
+	normalize(&cfg)
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config dir %q: %w", filepath.Dir(path), err)
 	}
@@ -82,4 +88,20 @@ func saveToPath(path string, cfg Config) error {
 		return fmt.Errorf("write config %q: %w", path, err)
 	}
 	return nil
+}
+
+func normalize(cfg *Config) {
+	if cfg.NamespacesByContext == nil {
+		cfg.NamespacesByContext = map[string]string{}
+	}
+	if cfg.Context == "" {
+		return
+	}
+	if namespace, ok := cfg.NamespacesByContext[cfg.Context]; ok && namespace != "" {
+		cfg.Namespace = namespace
+		return
+	}
+	if cfg.Namespace != "" {
+		cfg.NamespacesByContext[cfg.Context] = cfg.Namespace
+	}
 }

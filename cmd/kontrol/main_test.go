@@ -14,6 +14,7 @@ import (
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
+	"kontrol/internal/config"
 	"kontrol/internal/k8s"
 	"kontrol/internal/ui"
 )
@@ -139,6 +140,197 @@ func TestResolveNamespaceFallsBackWhenSavedNamespaceIsStale(t *testing.T) {
 	}
 	if got := resolveNamespace("stale", []string{"team-a", "team-b"}); got != "team-a" {
 		t.Fatalf("expected first available namespace fallback, got %q", got)
+	}
+}
+
+func TestApplyContextRestoresNamespaceForSelectedContext(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	rt := &runtimeState{
+		currentContext:   "dev",
+		currentNamespace: "team-a",
+		namespacesByCtx: map[string]string{
+			"dev":  "team-a",
+			"prod": "team-b",
+		},
+		namespaces: []string{"team-a", "team-b", "default"},
+		mockPods:   []k8s.PodRow{{Name: "pod-a"}},
+	}
+
+	rt.applyContext("prod")
+
+	if rt.currentNamespace != "team-b" {
+		t.Fatalf("currentNamespace = %q, want %q", rt.currentNamespace, "team-b")
+	}
+}
+
+func TestApplyNamespaceStoresNamespaceForCurrentContext(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	rt := &runtimeState{
+		currentContext:  "dev",
+		namespacesByCtx: map[string]string{},
+	}
+
+	rt.applyNamespace("team-a")
+
+	if rt.namespacesByCtx["dev"] != "team-a" {
+		t.Fatalf("namespacesByCtx[dev] = %q, want %q", rt.namespacesByCtx["dev"], "team-a")
+	}
+}
+
+func TestApplyContextAndNamespacePersistPerContextSelection(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	rt := &runtimeState{
+		currentContext:   "dev",
+		currentNamespace: "team-a",
+		namespacesByCtx: map[string]string{
+			"dev":  "team-a",
+			"prod": "team-b",
+		},
+		namespaces: []string{"team-a", "team-b", "team-c", "default"},
+		mockPods:   []k8s.PodRow{{Name: "pod-a"}},
+	}
+
+	rt.applyContext("prod")
+	rt.applyNamespace("team-c")
+	rt.applyContext("dev")
+	rt.applyContext("prod")
+
+	if rt.currentNamespace != "team-c" {
+		t.Fatalf("currentNamespace = %q, want %q", rt.currentNamespace, "team-c")
+	}
+	if rt.namespacesByCtx["prod"] != "team-c" {
+		t.Fatalf("namespacesByCtx[prod] = %q, want %q", rt.namespacesByCtx["prod"], "team-c")
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if cfg.Context != "prod" || cfg.Namespace != "team-c" {
+		t.Fatalf("persisted config = %+v, want context=%q namespace=%q", cfg, "prod", "team-c")
+	}
+	if cfg.NamespacesByContext["dev"] != "team-a" || cfg.NamespacesByContext["prod"] != "team-c" {
+		t.Fatalf("persisted NamespacesByContext = %+v", cfg.NamespacesByContext)
+	}
+}
+
+func TestApplyContextNamespaceFetchFailureFallsBackToKubeconfigNamespace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	oldNewClient := newClientFromKubeconfig
+	oldContextNamespace := contextNamespace
+	t.Cleanup(func() {
+		newClientFromKubeconfig = oldNewClient
+		contextNamespace = oldContextNamespace
+	})
+
+	clientset := k8sfake.NewSimpleClientset()
+	clientset.PrependReactor("list", "namespaces", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("forbidden")
+	})
+	newClientFromKubeconfig = func(string, string) (*k8s.Client, error) {
+		return k8s.NewClient(clientset), nil
+	}
+	contextNamespace = func(string, string) (string, error) {
+		return "team-b", nil
+	}
+
+	rt := &runtimeState{
+		currentContext:   "dev",
+		currentNamespace: "team-a",
+		namespacesByCtx:  map[string]string{},
+	}
+
+	rt.applyContext("prod")
+
+	if rt.currentContext != "prod" {
+		t.Fatalf("currentContext = %q, want %q", rt.currentContext, "prod")
+	}
+	if rt.currentNamespace != "team-b" {
+		t.Fatalf("currentNamespace = %q, want %q", rt.currentNamespace, "team-b")
+	}
+	if rt.namespaces != nil {
+		t.Fatalf("namespaces = %v, want nil when fetch fails", rt.namespaces)
+	}
+	if rt.pendingErr == nil || rt.pendingErr.Error() != namespaceFallbackHint {
+		t.Fatalf("pendingErr = %v, want %q", rt.pendingErr, namespaceFallbackHint)
+	}
+	if rt.namespacesByCtx["prod"] != "team-b" {
+		t.Fatalf("namespacesByCtx[prod] = %q, want %q", rt.namespacesByCtx["prod"], "team-b")
+	}
+}
+
+func TestApplyContextNamespaceFallbackUsesDefaultWhenKubeconfigLookupFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	oldNewClient := newClientFromKubeconfig
+	oldContextNamespace := contextNamespace
+	t.Cleanup(func() {
+		newClientFromKubeconfig = oldNewClient
+		contextNamespace = oldContextNamespace
+	})
+
+	clientset := k8sfake.NewSimpleClientset()
+	clientset.PrependReactor("list", "namespaces", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("forbidden")
+	})
+	newClientFromKubeconfig = func(string, string) (*k8s.Client, error) {
+		return k8s.NewClient(clientset), nil
+	}
+	contextNamespace = func(string, string) (string, error) {
+		return "", errors.New("lookup failed")
+	}
+
+	rt := &runtimeState{
+		currentContext:   "dev",
+		currentNamespace: "team-a",
+		namespacesByCtx:  map[string]string{},
+	}
+
+	rt.applyContext("prod")
+
+	if rt.currentNamespace != "default" {
+		t.Fatalf("currentNamespace = %q, want %q", rt.currentNamespace, "default")
+	}
+}
+
+func TestNamespaceFallbackHintIsReturnedOnceViaRefreshPods(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	oldNewClient := newClientFromKubeconfig
+	oldContextNamespace := contextNamespace
+	t.Cleanup(func() {
+		newClientFromKubeconfig = oldNewClient
+		contextNamespace = oldContextNamespace
+	})
+
+	clientset := k8sfake.NewSimpleClientset()
+	clientset.PrependReactor("list", "namespaces", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("forbidden")
+	})
+	newClientFromKubeconfig = func(string, string) (*k8s.Client, error) {
+		return k8s.NewClient(clientset), nil
+	}
+	contextNamespace = func(string, string) (string, error) {
+		return "team-b", nil
+	}
+
+	rt := &runtimeState{}
+	rt.applyContext("prod")
+
+	if rt.pendingErr == nil || rt.pendingErr.Error() != namespaceFallbackHint {
+		t.Fatalf("pendingErr = %v, want %q", rt.pendingErr, namespaceFallbackHint)
+	}
+
+	_, firstErr := rt.refreshPods()
+	if firstErr == nil || firstErr.Error() != namespaceFallbackHint {
+		t.Fatalf("first refresh error = %v, want %q", firstErr, namespaceFallbackHint)
+	}
+
+	_, secondErr := rt.refreshPods()
+	if secondErr != nil {
+		t.Fatalf("second refresh error = %v, want nil", secondErr)
 	}
 }
 

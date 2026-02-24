@@ -2,6 +2,9 @@ package k8s
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +12,102 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+func TestContextNamespaceForExplicitContext(t *testing.T) {
+	path := writeKubeconfigForTest(t, `
+apiVersion: v1
+kind: Config
+current-context: prod
+contexts:
+- name: prod
+  context:
+    cluster: prod
+    user: prod
+    namespace: team-a
+`)
+
+	got, err := ContextNamespace(path, "prod")
+	if err != nil {
+		t.Fatalf("ContextNamespace() error = %v", err)
+	}
+	if got != "team-a" {
+		t.Fatalf("ContextNamespace() = %q, want %q", got, "team-a")
+	}
+}
+
+func TestContextNamespaceUsesCurrentContext(t *testing.T) {
+	path := writeKubeconfigForTest(t, `
+apiVersion: v1
+kind: Config
+current-context: dev
+contexts:
+- name: dev
+  context:
+    cluster: dev
+    user: dev
+    namespace: team-b
+`)
+
+	got, err := ContextNamespace(path, "")
+	if err != nil {
+		t.Fatalf("ContextNamespace() error = %v", err)
+	}
+	if got != "team-b" {
+		t.Fatalf("ContextNamespace() = %q, want %q", got, "team-b")
+	}
+}
+
+func TestContextNamespaceFallsBackToDefault(t *testing.T) {
+	path := writeKubeconfigForTest(t, `
+apiVersion: v1
+kind: Config
+current-context: prod
+contexts:
+- name: prod
+  context:
+    cluster: prod
+    user: prod
+`)
+
+	got, err := ContextNamespace(path, "prod")
+	if err != nil {
+		t.Fatalf("ContextNamespace() error = %v", err)
+	}
+	if got != "default" {
+		t.Fatalf("ContextNamespace() = %q, want %q", got, "default")
+	}
+}
+
+func TestContextNamespaceReturnsErrorWhenContextMissing(t *testing.T) {
+	path := writeKubeconfigForTest(t, `
+apiVersion: v1
+kind: Config
+current-context: prod
+contexts:
+- name: prod
+  context:
+    cluster: prod
+    user: prod
+`)
+
+	_, err := ContextNamespace(path, "missing")
+	if err == nil {
+		t.Fatal("ContextNamespace() expected error")
+	}
+	if !strings.Contains(err.Error(), `context "missing" not found`) {
+		t.Fatalf("ContextNamespace() error = %v, want missing context message", err)
+	}
+}
+
+func TestContextNamespaceWrapsLoadErrors(t *testing.T) {
+	_, err := ContextNamespace("/does/not/exist", "prod")
+	if err == nil {
+		t.Fatal("ContextNamespace() expected error")
+	}
+	if !strings.Contains(err.Error(), "load kubeconfig context namespace") {
+		t.Fatalf("ContextNamespace() error = %v, want wrapped load message", err)
+	}
+}
 
 func TestListNamespacesSorted(t *testing.T) {
 	client := fake.NewSimpleClientset(
@@ -204,4 +303,14 @@ func TestWithListTimeoutUsesParentSoonerDeadline(t *testing.T) {
 	if gotDeadline.After(parentDeadline) {
 		t.Fatalf("withListTimeout() deadline = %s, want <= parent deadline %s", gotDeadline, parentDeadline)
 	}
+}
+
+func writeKubeconfigForTest(t *testing.T, contents string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(contents)+"\n"), 0o600); err != nil {
+		t.Fatalf("write kubeconfig test file: %v", err)
+	}
+	return path
 }
