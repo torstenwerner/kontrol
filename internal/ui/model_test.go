@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -163,5 +164,56 @@ func TestTickTriggersRefreshWithoutClosingModal(t *testing.T) {
 	msg := cmd()
 	if _, ok := msg.(tea.BatchMsg); !ok {
 		t.Fatalf("expected tea.BatchMsg from tick, got %T", msg)
+	}
+}
+
+func TestTinyWindowSizeDoesNotCollapseBody(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	model := next.(Model)
+	next, _ = model.Update(tea.WindowSizeMsg{Width: 120, Height: 3})
+	model = next.(Model)
+
+	if model.height <= 6 {
+		t.Fatalf("expected height to remain usable, got %d", model.height)
+	}
+}
+
+func TestViewContainsPodRowsAfterUpdate(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
+	model := next.(Model)
+	next, _ = model.Update(PodsUpdatedMsg{
+		Pods: []PodRow{{Name: "mock-pod-a", Status: "Running", Ready: "1/1", Restarts: "0", Age: "1m", IP: "10.0.0.1", Node: "node-a", Labels: "app=demo"}},
+	})
+	model = next.(Model)
+
+	view := model.View()
+	if !strings.Contains(view, "mock-pod-a") {
+		t.Fatalf("expected rendered view to include pod row, got: %q", view)
+	}
+}
+
+func TestOutlierWindowHeightDoesNotCreateHugeBlankBody(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 9999})
+	model := next.(Model)
+	next, _ = model.Update(PodsUpdatedMsg{
+		Pods: []PodRow{{Name: "mock-pod-a", Status: "Running", Ready: "1/1", Restarts: "0", Age: "1m", IP: "10.0.0.1", Node: "node-a", Labels: "app=demo"}},
+	})
+	model = next.(Model)
+
+	view := model.View()
+	if !strings.Contains(view, "mock-pod-a") {
+		t.Fatalf("expected rendered view to include pod row, got: %q", view)
+	}
+	if strings.Count(view, "\n") > 120 {
+		t.Fatalf("expected compact view output, got too many lines: %d", strings.Count(view, "\n"))
 	}
 }

@@ -34,6 +34,14 @@ It loads contexts from your kubeconfig, lets you switch context/namespace intera
 go run ./cmd/kontrol
 ```
 
+### Mock data mode (for UI debugging)
+
+If you want to verify rendering without a live cluster, run with mock contexts/namespaces/pods:
+
+```bash
+KONTROL_MOCK_DATA=1 go run ./cmd/kontrol
+```
+
 ## Build locally
 
 ```bash

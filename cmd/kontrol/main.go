@@ -20,6 +20,7 @@ type runtimeState struct {
 	contexts         []string
 	namespaces       []string
 	client           *k8s.Client
+	mockPods         []k8s.PodRow
 	pendingErr       error
 }
 
@@ -30,29 +31,13 @@ func main() {
 	rt := bootstrapRuntime()
 	model := ui.NewModel(
 		ui.WithRefreshCmd(func() tea.Cmd {
-			pods, err := rt.refreshPods()
-			return tea.Batch(
-				cmdForMsg(ui.ContextsUpdatedMsg{Items: append([]string(nil), rt.contexts...), Current: rt.currentContext}),
-				cmdForMsg(ui.NamespacesUpdatedMsg{Items: append([]string(nil), rt.namespaces...), Current: rt.currentNamespace}),
-				cmdForMsg(ui.PodsUpdatedMsg{Pods: toUIPods(pods), RefreshedAt: time.Now(), Err: err}),
-			)
+			return refreshViewCmd(rt)
 		}),
 		ui.WithContextSelectedCmd(func(selected string) tea.Cmd {
-			rt.applyContext(selected)
-			pods, err := rt.refreshPods()
-			return tea.Batch(
-				cmdForMsg(ui.ContextsUpdatedMsg{Items: append([]string(nil), rt.contexts...), Current: rt.currentContext}),
-				cmdForMsg(ui.NamespacesUpdatedMsg{Items: append([]string(nil), rt.namespaces...), Current: rt.currentNamespace}),
-				cmdForMsg(ui.PodsUpdatedMsg{Pods: toUIPods(pods), RefreshedAt: time.Now(), Err: err}),
-			)
+			return contextSelectedCmd(rt, selected)
 		}),
 		ui.WithNamespaceSelectedCmd(func(selected string) tea.Cmd {
-			rt.applyNamespace(selected)
-			pods, err := rt.refreshPods()
-			return tea.Batch(
-				cmdForMsg(ui.NamespacesUpdatedMsg{Items: append([]string(nil), rt.namespaces...), Current: rt.currentNamespace}),
-				cmdForMsg(ui.PodsUpdatedMsg{Pods: toUIPods(pods), RefreshedAt: time.Now(), Err: err}),
-			)
+			return namespaceSelectedCmd(rt, selected)
 		}),
 	)
 
@@ -68,24 +53,28 @@ func main() {
 }
 
 func bootstrapRuntime() *runtimeState {
+	if mockEnabled() {
+		return mockRuntime()
+	}
+
 	rt := &runtimeState{}
 
 	cfg, err := config.Load()
 	if err != nil {
 		log.Printf("load persisted config: %+v", err)
-		rt.pendingErr = errors.New("could not load saved preferences")
+		rt.pendingErr = errors.New("load saved preferences failed")
 	}
 
 	contexts, err := k8s.ListContexts("")
 	if err != nil {
 		log.Printf("list kubeconfig contexts: %+v", err)
-		rt.pendingErr = firstErr(rt.pendingErr, errors.New("unable to load Kubernetes contexts"))
+		rt.pendingErr = firstErr(rt.pendingErr, errors.New("load Kubernetes contexts failed; check kubeconfig"))
 	}
 	rt.contexts = contexts
 	kubeCurrent, currentErr := k8s.CurrentContext("")
 	if currentErr != nil {
 		log.Printf("resolve kubeconfig current context: %+v", currentErr)
-		rt.pendingErr = firstErr(rt.pendingErr, errors.New("no Kubernetes context available"))
+		rt.pendingErr = firstErr(rt.pendingErr, errors.New("resolve current Kubernetes context failed; check kubeconfig"))
 	}
 	rt.currentContext = resolveContext(cfg.Context, kubeCurrent, contexts)
 
@@ -95,6 +84,16 @@ func bootstrapRuntime() *runtimeState {
 }
 
 func (rt *runtimeState) applyContext(selected string) {
+	if len(rt.mockPods) > 0 {
+		if selected == "" {
+			return
+		}
+		rt.currentContext = selected
+		rt.currentNamespace = resolveNamespace(rt.currentNamespace, rt.namespaces)
+		_ = rt.persistConfig()
+		return
+	}
+
 	if selected == "" {
 		rt.client = nil
 		rt.namespaces = nil
@@ -110,7 +109,7 @@ func (rt *runtimeState) applyContext(selected string) {
 		rt.namespaces = nil
 		rt.currentContext = selected
 		rt.currentNamespace = resolveNamespace(rt.currentNamespace, nil)
-		rt.pendingErr = firstErr(rt.pendingErr, errors.New("unable to connect to selected context"))
+		rt.pendingErr = firstErr(rt.pendingErr, errors.New("connect selected context failed"))
 		_ = rt.persistConfig()
 		return
 	}
@@ -122,7 +121,7 @@ func (rt *runtimeState) applyContext(selected string) {
 		rt.namespaces = nil
 		rt.currentContext = selected
 		rt.currentNamespace = resolveNamespace(rt.currentNamespace, nil)
-		rt.pendingErr = firstErr(rt.pendingErr, errors.New("unable to load namespaces"))
+		rt.pendingErr = firstErr(rt.pendingErr, errors.New("load namespaces for selected context failed"))
 		_ = rt.persistConfig()
 		return
 	}
@@ -146,9 +145,13 @@ func (rt *runtimeState) refreshPods() ([]k8s.PodRow, error) {
 	uiErr := rt.pendingErr
 	rt.pendingErr = nil
 
+	if len(rt.mockPods) > 0 {
+		return append([]k8s.PodRow(nil), rt.mockPods...), uiErr
+	}
+
 	if rt.client == nil {
 		if uiErr == nil {
-			uiErr = errors.New("Kubernetes client not initialized")
+			uiErr = errors.New("load pods failed: connect a context first")
 		}
 		return nil, uiErr
 	}
@@ -157,7 +160,7 @@ func (rt *runtimeState) refreshPods() ([]k8s.PodRow, error) {
 	if err != nil {
 		log.Printf("list pods (context=%q namespace=%q): %+v", rt.currentContext, rt.currentNamespace, err)
 		if uiErr == nil {
-			uiErr = errors.New("unable to load pods")
+			uiErr = errors.New("load pods for current namespace failed")
 		}
 		return nil, uiErr
 	}
@@ -171,7 +174,7 @@ func (rt *runtimeState) persistConfig() error {
 	})
 	if err != nil {
 		log.Printf("persist config (context=%q namespace=%q): %+v", rt.currentContext, rt.currentNamespace, err)
-		rt.pendingErr = firstErr(rt.pendingErr, errors.New("could not save preferences"))
+		rt.pendingErr = firstErr(rt.pendingErr, errors.New("save preferences failed"))
 	}
 	return err
 }
@@ -228,6 +231,45 @@ func toUIPods(rows []k8s.PodRow) []ui.PodRow {
 	return out
 }
 
+func refreshViewCmd(rt *runtimeState) tea.Cmd {
+	return tea.Batch(metadataCmd(rt), podsCmd(rt))
+}
+
+func contextSelectedCmd(rt *runtimeState, selected string) tea.Cmd {
+	rt.applyContext(selected)
+	return tea.Batch(metadataCmd(rt), podsCmd(rt))
+}
+
+func namespaceSelectedCmd(rt *runtimeState, selected string) tea.Cmd {
+	rt.applyNamespace(selected)
+	return tea.Batch(namespaceCmd(rt), podsCmd(rt))
+}
+
+func metadataCmd(rt *runtimeState) tea.Cmd {
+	return tea.Batch(contextCmd(rt), namespaceCmd(rt))
+}
+
+func contextCmd(rt *runtimeState) tea.Cmd {
+	return cmdForMsg(ui.ContextsUpdatedMsg{
+		Items:   append([]string(nil), rt.contexts...),
+		Current: rt.currentContext,
+	})
+}
+
+func namespaceCmd(rt *runtimeState) tea.Cmd {
+	return cmdForMsg(ui.NamespacesUpdatedMsg{
+		Items:   append([]string(nil), rt.namespaces...),
+		Current: rt.currentNamespace,
+	})
+}
+
+func podsCmd(rt *runtimeState) tea.Cmd {
+	return func() tea.Msg {
+		pods, err := rt.refreshPods()
+		return ui.PodsUpdatedMsg{Pods: toUIPods(pods), RefreshedAt: time.Now(), Err: err}
+	}
+}
+
 func firstErr(current, next error) error {
 	if current != nil {
 		return current
@@ -238,5 +280,35 @@ func firstErr(current, next error) error {
 func cmdForMsg(msg tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		return msg
+	}
+}
+
+func mockEnabled() bool {
+	return os.Getenv("KONTROL_MOCK_DATA") == "1"
+}
+
+func mockRuntime() *runtimeState {
+	pods := []k8s.PodRow{
+		{Name: "api-7d4f6dbf5f-4m2rk", Status: "Running", Ready: "2/2", Restarts: "0", Age: "12m", IP: "10.42.1.11", Node: "worker-a", Labels: "app=api,team=platform"},
+		{Name: "api-7d4f6dbf5f-l2nxd", Status: "Running", Ready: "2/2", Restarts: "1", Age: "9m", IP: "10.42.1.12", Node: "worker-b", Labels: "app=api,team=platform"},
+		{Name: "web-5bc9c6f9cf-b9ksp", Status: "Running", Ready: "1/1", Restarts: "0", Age: "15m", IP: "10.42.2.20", Node: "worker-b", Labels: "app=web,tier=frontend"},
+		{Name: "web-5bc9c6f9cf-mj8qp", Status: "Running", Ready: "1/1", Restarts: "0", Age: "15m", IP: "10.42.2.21", Node: "worker-a", Labels: "app=web,tier=frontend"},
+		{Name: "worker-7f55d9b96d-2hg7k", Status: "Running", Ready: "1/1", Restarts: "0", Age: "42m", IP: "10.42.3.30", Node: "worker-c", Labels: "app=worker,queue=default"},
+		{Name: "worker-7f55d9b96d-j6nrz", Status: "Running", Ready: "1/1", Restarts: "2", Age: "41m", IP: "10.42.3.31", Node: "worker-c", Labels: "app=worker,queue=default"},
+		{Name: "worker-7f55d9b96d-v4mqp", Status: "CrashLoopBackOff", Ready: "0/1", Restarts: "6", Age: "40m", IP: "10.42.3.32", Node: "worker-b", Labels: "app=worker,queue=priority"},
+		{Name: "payments-66b57bd96f-5r8tg", Status: "Pending", Ready: "0/2", Restarts: "0", Age: "3m", IP: "", Node: "worker-a", Labels: "app=payments,team=finance"},
+		{Name: "payments-66b57bd96f-9vckm", Status: "Running", Ready: "2/2", Restarts: "0", Age: "3m", IP: "10.42.4.40", Node: "worker-a", Labels: "app=payments,team=finance"},
+		{Name: "redis-0", Status: "Running", Ready: "1/1", Restarts: "0", Age: "2h", IP: "10.42.5.50", Node: "worker-c", Labels: "app=redis,role=cache"},
+		{Name: "reporting-5c8f5d9674-6mmkc", Status: "Error", Ready: "0/1", Restarts: "3", Age: "18m", IP: "10.42.6.60", Node: "worker-b", Labels: "app=reporting"},
+		{Name: "batch-1700001-abcd", Status: "Completed", Ready: "0/1", Restarts: "0", Age: "1h", IP: "", Node: "worker-a", Labels: "job=batch"},
+		{Name: "batch-1700002-efgh", Status: "Failed", Ready: "0/1", Restarts: "1", Age: "58m", IP: "", Node: "worker-a", Labels: "job=batch"},
+	}
+
+	return &runtimeState{
+		currentContext:   "mock-dev",
+		currentNamespace: "default",
+		contexts:         []string{"mock-dev", "mock-stage", "mock-prod"},
+		namespaces:       []string{"default", "kube-system", "payments", "monitoring"},
+		mockPods:         pods,
 	}
 }
