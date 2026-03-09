@@ -46,12 +46,7 @@ func NewClientFromKubeconfig(kubeconfigPath, contextName string) (*Client, error
 		overrides.CurrentContext = contextName
 	}
 
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if kubeconfigPath != "" {
-		loadingRules.ExplicitPath = kubeconfigPath
-	}
-
-	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides)
+	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRulesForPath(kubeconfigPath), overrides)
 	restConfig, err := clientConfig.ClientConfig()
 	if err != nil {
 		return nil, fmt.Errorf("build Kubernetes REST config: %w", err)
@@ -121,28 +116,32 @@ func ContextNamespace(kubeconfigPath, contextName string) (string, error) {
 }
 
 func loadRawConfig(kubeconfigPath string) (clientcmdapi.Config, error) {
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if kubeconfigPath != "" {
-		loadingRules.ExplicitPath = kubeconfigPath
-	}
-
-	rawConfig, err := loadingRules.Load()
+	rawConfig, err := loadingRulesForPath(kubeconfigPath).Load()
 	if err != nil {
 		return clientcmdapi.Config{}, fmt.Errorf("load kubeconfig: %w", err)
 	}
 	return *rawConfig, nil
 }
 
+func loadingRulesForPath(kubeconfigPath string) *clientcmd.ClientConfigLoadingRules {
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if kubeconfigPath != "" {
+		loadingRules.ExplicitPath = kubeconfigPath
+	}
+	return loadingRules
+}
+
 // ListNamespaces returns namespace names sorted alphabetically.
 func (c *Client) ListNamespaces(ctx context.Context) ([]string, error) {
-	if c == nil || c.clientset == nil {
-		return nil, fmt.Errorf("list namespaces: client is not initialized")
+	clientset, err := c.clientsetFor("list namespaces")
+	if err != nil {
+		return nil, err
 	}
 
 	listCtx, cancel := withListTimeout(ctx)
 	defer cancel()
 
-	nsList, err := c.clientset.CoreV1().Namespaces().List(listCtx, metav1.ListOptions{})
+	nsList, err := clientset.CoreV1().Namespaces().List(listCtx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("list namespaces from Kubernetes API: %w", err)
 	}
@@ -157,14 +156,15 @@ func (c *Client) ListNamespaces(ctx context.Context) ([]string, error) {
 
 // ListPods returns UI-ready pod rows sorted by pod name.
 func (c *Client) ListPods(ctx context.Context, namespace string) ([]PodRow, error) {
-	if c == nil || c.clientset == nil {
-		return nil, fmt.Errorf("list pods: client is not initialized")
+	clientset, err := c.clientsetFor("list pods")
+	if err != nil {
+		return nil, err
 	}
 
 	listCtx, cancel := withListTimeout(ctx)
 	defer cancel()
 
-	podList, err := c.clientset.CoreV1().Pods(namespace).List(listCtx, metav1.ListOptions{})
+	podList, err := clientset.CoreV1().Pods(namespace).List(listCtx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("list pods in namespace %q: %w", namespace, err)
 	}
@@ -180,6 +180,13 @@ func (c *Client) ListPods(ctx context.Context, namespace string) ([]PodRow, erro
 	})
 
 	return rows, nil
+}
+
+func (c *Client) clientsetFor(op string) (kubernetes.Interface, error) {
+	if c == nil || c.clientset == nil {
+		return nil, fmt.Errorf("%s: client is not initialized", op)
+	}
+	return c.clientset, nil
 }
 
 func withListTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
