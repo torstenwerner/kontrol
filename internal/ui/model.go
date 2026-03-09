@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -200,13 +201,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
-	if key == "ctrl+c" || key == "q" {
+	if key == "ctrl+c" || key == "Q" {
 		return m, tea.Quit
 	}
 
 	if m.modal != modalNone {
+		if index, handled := modalLetterIndex(m.modalItems(), msg); handled {
+			if index >= 0 {
+				m.modalIndex = index
+			}
+			return m, nil
+		}
+
 		switch key {
-		case "r":
+		case "R":
 			return m, m.refreshIfEnabled()
 		case "esc":
 			m.modal = modalNone
@@ -229,19 +237,19 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch key {
-	case "c":
+	case "C":
 		if len(m.contexts) > 0 {
 			m.modal = modalContext
 			m.modalIndex = selectedIndex(m.contexts, m.currentContext)
 		}
 		return m, nil
-	case "n":
+	case "N":
 		if len(m.namespaces) > 0 {
 			m.modal = modalNamespace
 			m.modalIndex = selectedIndex(m.namespaces, m.currentNamespace)
 		}
 		return m, nil
-	case "r":
+	case "R":
 		return m, m.refreshIfEnabled()
 	case "up", "left":
 		if m.scrollOffset > 0 {
@@ -350,7 +358,10 @@ func (m Model) renderBody() string {
 
 func (m Model) renderFooter() string {
 	info := fmt.Sprintf("pods: %d  scroll: %d/%d", len(m.pods), m.scrollOffset, m.maxScrollOffset())
-	help := "c context • n namespace • r refresh • ↑/↓ scroll • enter select • esc close • q quit"
+	help := "C context • N namespace • R refresh • ↑/↓ scroll • Q quit"
+	if m.modal != modalNone {
+		help = "type lowercase letter jump • ↑/↓ move • R refresh • enter select • esc close • Q quit"
+	}
 	return m.styles.Footer.Width(m.width).Render(info + "\n" + help)
 }
 
@@ -462,6 +473,21 @@ func (m Model) modalItems() []string {
 
 func (m Model) modalLen() int {
 	return len(m.modalItems())
+}
+
+func modalLetterIndex(items []string, msg tea.KeyMsg) (int, bool) {
+	if msg.Type != tea.KeyRunes || len(msg.Runes) != 1 || !unicode.IsLower(msg.Runes[0]) {
+		return 0, false
+	}
+
+	prefix := strings.ToLower(string(msg.Runes[0]))
+	for i, item := range items {
+		if strings.HasPrefix(strings.ToLower(item), prefix) {
+			return i, true
+		}
+	}
+
+	return -1, true
 }
 
 func (m Model) modalBox() string {

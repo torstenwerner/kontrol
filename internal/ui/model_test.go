@@ -24,7 +24,7 @@ func TestKeyFlowContextSelectionUpdatesStateAndFiresCallback(t *testing.T) {
 	})
 	model := next.(Model)
 
-	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("C")})
 	model = next.(Model)
 	if model.modal != modalContext || model.modalIndex != 0 {
 		t.Fatalf("expected context modal open at current item, got modal=%v index=%d", model.modal, model.modalIndex)
@@ -65,7 +65,7 @@ func TestKeyFlowNamespaceModalEscResetsState(t *testing.T) {
 	})
 	model := next.(Model)
 
-	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
 	model = next.(Model)
 	if model.modal != modalNamespace {
 		t.Fatalf("expected namespace modal, got %v", model.modal)
@@ -125,6 +125,26 @@ type assertErr string
 
 func (e assertErr) Error() string { return string(e) }
 
+func TestManualRefreshWorksWhenNoModalOpen(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(WithRefreshCmd(func() tea.Cmd {
+		return func() tea.Msg { return "manual-refresh" }
+	}))
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("R")})
+	model := next.(Model)
+	if model.modal != modalNone {
+		t.Fatalf("expected no modal to be open, got %v", model.modal)
+	}
+	if cmd == nil {
+		t.Fatal("expected refresh command")
+	}
+	if msg := cmd(); msg != "manual-refresh" {
+		t.Fatalf("expected manual refresh command to run, got %v", msg)
+	}
+}
+
 func TestManualRefreshWorksWhileModalOpen(t *testing.T) {
 	t.Parallel()
 
@@ -133,7 +153,7 @@ func TestManualRefreshWorksWhileModalOpen(t *testing.T) {
 	}))
 	m.modal = modalContext
 
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("R")})
 	model := next.(Model)
 	if model.modal != modalContext {
 		t.Fatalf("expected modal to stay open, got %v", model.modal)
@@ -236,6 +256,95 @@ func TestOutlierWindowHeightDoesNotCreateHugeBlankBody(t *testing.T) {
 	}
 }
 
+func TestModalLetterJumpIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel()
+	next, _ := m.Update(NamespacesUpdatedMsg{
+		Items:   []string{"alpha", "Beta", "Gamma"},
+		Current: "alpha",
+	})
+	model := next.(Model)
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
+	model = next.(Model)
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	model = next.(Model)
+	if model.modalIndex != 1 {
+		t.Fatalf("expected lower-case key to match upper-case item, got %d", model.modalIndex)
+	}
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+	model = next.(Model)
+	if model.modalIndex != 2 {
+		t.Fatalf("expected lower-case key to match upper-case item, got %d", model.modalIndex)
+	}
+}
+
+func TestModalLetterNoMatchKeepsSelectionAndDoesNotRefresh(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(WithRefreshCmd(func() tea.Cmd {
+		return func() tea.Msg { return "manual-refresh" }
+	}))
+	next, _ := m.Update(NamespacesUpdatedMsg{
+		Items:   []string{"alpha", "beta"},
+		Current: "beta",
+	})
+	model := next.(Model)
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
+	model = next.(Model)
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	model = next.(Model)
+
+	if model.modalIndex != 1 {
+		t.Fatalf("expected selection to stay on current item, got %d", model.modalIndex)
+	}
+	if cmd != nil {
+		t.Fatal("expected no refresh command when no item matches the typed letter")
+	}
+}
+
+func TestLowercaseQJumpsInsteadOfQuitting(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel()
+	next, _ := m.Update(NamespacesUpdatedMsg{
+		Items:   []string{"alpha", "qa", "zeta"},
+		Current: "alpha",
+	})
+	model := next.(Model)
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
+	model = next.(Model)
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	model = next.(Model)
+
+	if model.modal != modalNamespace {
+		t.Fatalf("expected namespace modal to remain open, got %v", model.modal)
+	}
+	if model.modalIndex != 1 {
+		t.Fatalf("expected lowercase q to jump to qa, got %d", model.modalIndex)
+	}
+	if cmd != nil {
+		t.Fatal("expected lowercase q to navigate instead of quitting")
+	}
+}
+
+func TestUppercaseQStillQuits(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel()
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Q")})
+	if cmd == nil {
+		t.Fatal("expected uppercase Q to return a quit command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg from uppercase Q, got %T", cmd())
+	}
+}
+
 func TestNamespaceModalViewUsesScrollableWindow(t *testing.T) {
 	t.Parallel()
 
@@ -248,7 +357,7 @@ func TestNamespaceModalViewUsesScrollableWindow(t *testing.T) {
 	})
 	model = next.(Model)
 
-	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
 	model = next.(Model)
 
 	view := model.View()
@@ -275,7 +384,7 @@ func TestNamespaceModalNavigationScrollsVisibleWindow(t *testing.T) {
 	})
 	model = next.(Model)
 
-	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
 	model = next.(Model)
 	for range 10 {
 		next, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
@@ -291,6 +400,38 @@ func TestNamespaceModalNavigationScrollsVisibleWindow(t *testing.T) {
 	}
 	if strings.Contains(view, "team-01") {
 		t.Fatalf("expected early namespaces to scroll out of the visible window, got: %q", view)
+	}
+}
+
+func TestModalLetterJumpKeepsMatchedItemVisible(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 12})
+	model := next.(Model)
+	next, _ = model.Update(NamespacesUpdatedMsg{
+		Items: []string{
+			"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf",
+			"hotel", "india", "juliet", "kilo", "lima", "mike", "november",
+		},
+		Current: "alpha",
+	})
+	model = next.(Model)
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
+	model = next.(Model)
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	model = next.(Model)
+
+	view := model.View()
+	if model.modalIndex != 13 {
+		t.Fatalf("expected november to be selected, got %d", model.modalIndex)
+	}
+	if !strings.Contains(view, "november") {
+		t.Fatalf("expected matched item to be visible, got: %q", view)
+	}
+	if !strings.Contains(view, "9-14 of 14") {
+		t.Fatalf("expected viewport footer to reflect scrolled window, got: %q", view)
 	}
 }
 
@@ -310,7 +451,7 @@ func TestModalRenderStaysWithinViewport(t *testing.T) {
 	})
 	model = next.(Model)
 
-	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
 	model = next.(Model)
 
 	view := model.View()

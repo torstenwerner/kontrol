@@ -20,13 +20,14 @@ It loads contexts from your kubeconfig, lets you switch context/namespace intera
 
 ## Hotkeys
 
-- `c` open context selector
-- `n` open namespace selector
-- `r` refresh pods now
+- `C` open context selector
+- `N` open namespace selector
+- `R` refresh pods now
+- when a selector is open, type a lowercase letter to jump to the first matching entry (case-insensitive)
 - `↑/↓` (also `←/→`) scroll list / move selector
 - `enter` apply selection
 - `esc` close selector
-- `q` or `ctrl+c` quit
+- `Q` or `ctrl+c` quit
 
 ## Run locally
 
