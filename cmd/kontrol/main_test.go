@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
@@ -145,6 +144,21 @@ func TestResolveNamespaceFallsBackWhenSavedNamespaceIsStale(t *testing.T) {
 
 func TestApplyContextRestoresNamespaceForSelectedContext(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+
+	oldNewClient := newClientFromKubeconfig
+	t.Cleanup(func() {
+		newClientFromKubeconfig = oldNewClient
+	})
+
+	clientset := k8sfake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-b"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
+	)
+	newClientFromKubeconfig = func(string, string) (*k8s.Client, error) {
+		return k8s.NewClient(clientset), nil
+	}
+
 	rt := &runtimeState{
 		currentContext:   "dev",
 		currentNamespace: "team-a",
@@ -152,8 +166,6 @@ func TestApplyContextRestoresNamespaceForSelectedContext(t *testing.T) {
 			"dev":  "team-a",
 			"prod": "team-b",
 		},
-		namespaces: []string{"team-a", "team-b", "default"},
-		mockPods:   []k8s.PodRow{{Name: "pod-a"}},
 	}
 
 	rt.applyContext("prod")
@@ -180,6 +192,21 @@ func TestApplyNamespaceStoresNamespaceForCurrentContext(t *testing.T) {
 func TestApplyContextAndNamespacePersistPerContextSelection(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
+	oldNewClient := newClientFromKubeconfig
+	t.Cleanup(func() {
+		newClientFromKubeconfig = oldNewClient
+	})
+
+	clientset := k8sfake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-b"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-c"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
+	)
+	newClientFromKubeconfig = func(string, string) (*k8s.Client, error) {
+		return k8s.NewClient(clientset), nil
+	}
+
 	rt := &runtimeState{
 		currentContext:   "dev",
 		currentNamespace: "team-a",
@@ -187,8 +214,6 @@ func TestApplyContextAndNamespacePersistPerContextSelection(t *testing.T) {
 			"dev":  "team-a",
 			"prod": "team-b",
 		},
-		namespaces: []string{"team-a", "team-b", "team-c", "default"},
-		mockPods:   []k8s.PodRow{{Name: "pod-a"}},
 	}
 
 	rt.applyContext("prod")
@@ -393,36 +418,5 @@ func runCmdWithTimeout(t *testing.T, cmd tea.Cmd, timeout time.Duration) tea.Msg
 	case <-ctx.Done():
 		t.Fatalf("command did not complete within %s", timeout)
 		return nil
-	}
-}
-
-func TestMockRuntimeWhenEnabled(t *testing.T) {
-	t.Setenv("KONTROL_MOCK_DATA", "1")
-	rt := bootstrapRuntime()
-	if rt.currentContext == "" || rt.currentNamespace == "" {
-		t.Fatalf("expected mock context/namespace, got context=%q namespace=%q", rt.currentContext, rt.currentNamespace)
-	}
-	if len(rt.contexts) == 0 || len(rt.namespaces) == 0 || len(rt.mockPods) == 0 {
-		t.Fatalf("expected mock data to be populated, got contexts=%d namespaces=%d pods=%d", len(rt.contexts), len(rt.namespaces), len(rt.mockPods))
-	}
-	pods, err := rt.refreshPods()
-	if err != nil {
-		t.Fatalf("refreshPods() unexpected error in mock mode: %v", err)
-	}
-	if len(pods) != len(rt.mockPods) {
-		t.Fatalf("refreshPods() pods=%d, want %d", len(pods), len(rt.mockPods))
-	}
-}
-
-func TestMockEnabledEnv(t *testing.T) {
-	if os.Getenv("KONTROL_MOCK_DATA") == "1" {
-		t.Skip("environment already has KONTROL_MOCK_DATA=1")
-	}
-	if mockEnabled() {
-		t.Fatal("mockEnabled() should be false when env var not set to 1")
-	}
-	t.Setenv("KONTROL_MOCK_DATA", "1")
-	if !mockEnabled() {
-		t.Fatal("mockEnabled() should be true when env var is 1")
 	}
 }
