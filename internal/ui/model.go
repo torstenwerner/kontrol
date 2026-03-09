@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // PodRow is a single row in the pod table.
@@ -354,31 +355,19 @@ func (m Model) renderFooter() string {
 }
 
 func (m Model) renderModal(base string) string {
-	title := "Select context"
-	if m.modal == modalNamespace {
-		title = "Select namespace"
+	background := strings.Split(lipgloss.Place(m.width, m.height, lipgloss.Left, lipgloss.Top, base), "\n")
+	faint := lipgloss.NewStyle().Faint(true)
+	for i, line := range background {
+		background[i] = faint.Render(line)
 	}
 
-	items := m.modalItems()
-	if len(items) == 0 {
-		items = []string{"(no entries)"}
-	}
+	box := m.modalBox()
+	boxWidth := lipgloss.Width(box)
+	boxHeight := lipgloss.Height(box)
+	x := max(0, (m.width-boxWidth)/2)
+	y := max(0, (m.height-boxHeight)/2)
 
-	lines := make([]string, 0, len(items)+1)
-	lines = append(lines, m.styles.ModalTitle.Render(title))
-	for i, item := range items {
-		prefix := "  "
-		style := m.styles.ModalItem
-		if i == m.modalIndex {
-			prefix = "› "
-			style = m.styles.ModalActive
-		}
-		lines = append(lines, style.Render(prefix+item))
-	}
-
-	box := m.styles.Modal.Render(strings.Join(lines, "\n"))
-	overlay := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
-	return overlay + "\n" + lipgloss.NewStyle().Faint(true).Render(base)
+	return overlayLines(background, strings.Split(box, "\n"), x, y, m.width)
 }
 
 func (m Model) tableHeader() string {
@@ -473,6 +462,116 @@ func (m Model) modalItems() []string {
 
 func (m Model) modalLen() int {
 	return len(m.modalItems())
+}
+
+func (m Model) modalBox() string {
+	title := "Select context"
+	if m.modal == modalNamespace {
+		title = "Select namespace"
+	}
+
+	items := m.modalItems()
+	total := len(items)
+	activeIndex := clampIndex(m.modalIndex, total)
+	if total == 0 {
+		items = []string{"(no entries)"}
+	}
+
+	boxWidth := min(56, max(1, m.width-4))
+	boxStyle := m.styles.Modal.Width(boxWidth)
+	innerWidth := max(1, boxWidth-boxStyle.GetHorizontalFrameSize())
+	pageSize := max(1, m.height-boxStyle.GetVerticalFrameSize()-2)
+
+	start, end := modalWindow(total, activeIndex, pageSize)
+	if total == 0 {
+		start, end = 0, 1
+	}
+
+	lines := make([]string, 0, end-start+2)
+	lines = append(lines, m.styles.ModalTitle.Width(innerWidth).Render(truncate(title, innerWidth)))
+
+	itemWidth := max(1, innerWidth-2)
+	for i, item := range items[start:end] {
+		actualIndex := start + i
+		prefix := "  "
+		style := m.styles.ModalItem.Width(innerWidth)
+		if total > 0 && actualIndex == activeIndex {
+			prefix = "› "
+			style = m.styles.ModalActive.Width(innerWidth)
+		}
+		lines = append(lines, style.Render(prefix+truncate(item, itemWidth)))
+	}
+
+	lines = append(lines, lipgloss.NewStyle().
+		Foreground(lipgloss.Color("244")).
+		Width(innerWidth).
+		Render(truncate(modalFooter(start, end, total), innerWidth)))
+
+	return boxStyle.Render(strings.Join(lines, "\n"))
+}
+
+func modalWindow(total, selected, pageSize int) (int, int) {
+	if total <= 0 {
+		return 0, 0
+	}
+	if pageSize <= 0 || total <= pageSize {
+		return 0, total
+	}
+
+	selected = clampIndex(selected, total)
+	start := selected - pageSize/2
+	if start < 0 {
+		start = 0
+	}
+
+	maxStart := total - pageSize
+	if start > maxStart {
+		start = maxStart
+	}
+
+	return start, min(total, start+pageSize)
+}
+
+func modalFooter(start, end, total int) string {
+	if total <= 0 {
+		return "0 items"
+	}
+	return fmt.Sprintf("%d-%d of %d", start+1, end, total)
+}
+
+func overlayLines(background, foreground []string, x, y, width int) string {
+	if width <= 0 {
+		return strings.Join(background, "\n")
+	}
+
+	for i, line := range foreground {
+		row := y + i
+		if row < 0 || row >= len(background) {
+			continue
+		}
+
+		lineWidth := lipgloss.Width(line)
+		if lineWidth <= 0 || x >= width {
+			continue
+		}
+
+		left := ansi.Cut(background[row], 0, x)
+		rightStart := min(width, x+lineWidth)
+		right := ansi.Cut(background[row], rightStart, width)
+		background[row] = left + line + right
+	}
+
+	return strings.Join(background, "\n")
+}
+
+func clampIndex(index, total int) int {
+	if total <= 0 || index < 0 {
+		return 0
+	}
+	if index >= total {
+		return total - 1
+	}
+	return index
 }
 
 func selectedIndex(items []string, current string) int {

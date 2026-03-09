@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -233,4 +234,98 @@ func TestOutlierWindowHeightDoesNotCreateHugeBlankBody(t *testing.T) {
 	if strings.Count(view, "\n") > 120 {
 		t.Fatalf("expected compact view output, got too many lines: %d", strings.Count(view, "\n"))
 	}
+}
+
+func TestNamespaceModalViewUsesScrollableWindow(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 12})
+	model := next.(Model)
+	next, _ = model.Update(NamespacesUpdatedMsg{
+		Items:   numberedItems("team", 20),
+		Current: "team-18",
+	})
+	model = next.(Model)
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	model = next.(Model)
+
+	view := model.View()
+	if !strings.Contains(view, "team-18") {
+		t.Fatalf("expected selected namespace to stay visible, got: %q", view)
+	}
+	if strings.Contains(view, "team-01") {
+		t.Fatalf("expected modal to render a bounded window, got: %q", view)
+	}
+	if !strings.Contains(view, "15-20 of 20") {
+		t.Fatalf("expected modal footer to describe visible range, got: %q", view)
+	}
+}
+
+func TestNamespaceModalNavigationScrollsVisibleWindow(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 12})
+	model := next.(Model)
+	next, _ = model.Update(NamespacesUpdatedMsg{
+		Items:   numberedItems("team", 20),
+		Current: "team-01",
+	})
+	model = next.(Model)
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	model = next.(Model)
+	for range 10 {
+		next, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+		model = next.(Model)
+	}
+
+	view := model.View()
+	if model.modalIndex != 10 {
+		t.Fatalf("expected modal index 10 after navigation, got %d", model.modalIndex)
+	}
+	if !strings.Contains(view, "team-11") {
+		t.Fatalf("expected navigated namespace to be visible, got: %q", view)
+	}
+	if strings.Contains(view, "team-01") {
+		t.Fatalf("expected early namespaces to scroll out of the visible window, got: %q", view)
+	}
+}
+
+func TestModalRenderStaysWithinViewport(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 18})
+	model := next.(Model)
+	next, _ = model.Update(PodsUpdatedMsg{
+		Pods: []PodRow{{Name: "mock-pod-a", Status: "Running", Ready: "1/1", Restarts: "0", Age: "1m", IP: "10.0.0.1", Node: "node-a", Labels: "app=demo"}},
+	})
+	model = next.(Model)
+	next, _ = model.Update(NamespacesUpdatedMsg{
+		Items:   numberedItems("team", 20),
+		Current: "team-10",
+	})
+	model = next.(Model)
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	model = next.(Model)
+
+	view := model.View()
+	if lines := strings.Count(view, "\n") + 1; lines > 18 {
+		t.Fatalf("expected modal render to stay within viewport, got %d lines", lines)
+	}
+	if !strings.Contains(view, "Select namespace") {
+		t.Fatalf("expected modal title in view, got: %q", view)
+	}
+}
+
+func numberedItems(prefix string, count int) []string {
+	items := make([]string, 0, count)
+	for i := 1; i <= count; i++ {
+		items = append(items, fmt.Sprintf("%s-%02d", prefix, i))
+	}
+	return items
 }
